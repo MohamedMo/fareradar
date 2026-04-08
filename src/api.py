@@ -350,6 +350,33 @@ def history(origin: str, destination: str, days: int = 30):
         return {"points": points, "avg": round(avg)}
 
 
+@app.post("/api/discord/test")
+def discord_test():
+    """Post a test message to the configured Discord webhook."""
+    if not DISCORD_WEBHOOK:
+        return {"status": "not_configured",
+                "message": "Set DISCORD_WEBHOOK_URL in .env and restart the API."}
+    payload = {
+        "username": "FareRadar",
+        "embeds": [{
+            "title": "📡 FareRadar test message",
+            "description": "If you can see this, your webhook is wired up correctly. Real deal alerts will land in this channel.",
+            "color": 0x00CC88,
+            "footer": {"text": "Test sent from the dashboard"},
+        }],
+    }
+    try:
+        with httpx.Client(timeout=10) as client:
+            r = client.post(DISCORD_WEBHOOK, json=payload)
+        if r.status_code in (200, 204):
+            return {"status": "sent", "message": "Test message delivered to Discord."}
+        return {"status": f"error_{r.status_code}",
+                "message": f"Discord returned HTTP {r.status_code}: {r.text[:200]}"}
+    except Exception as e:
+        return {"status": "exception",
+                "message": f"{type(e).__name__}: {e}"}
+
+
 @app.get("/api/health")
 def health_log(limit: int = 20):
     with _conn() as db:

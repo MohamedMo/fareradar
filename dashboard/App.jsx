@@ -490,10 +490,25 @@ function FilterBar({ activeFilter, onFilter, activeRegion, onRegion }) {
 function SettingsPanel({ onClose }) {
   const [origins, setOrigins] = useState(["LHR", "LGW", "STN"]);
   const [threshold, setThreshold] = useState(40);
-  const [notifications, setNotifications] = useState({ email: true, push: true, telegram: false, sms: false });
+  const [discordStatus, setDiscordStatus] = useState(null);
+  const [discordSending, setDiscordSending] = useState(false);
 
   const toggleOrigin = (code) => {
     setOrigins(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
+  };
+
+  const testDiscord = async () => {
+    setDiscordSending(true);
+    setDiscordStatus(null);
+    try {
+      const r = await fetch("/api/discord/test", { method: "POST" });
+      const data = await r.json();
+      setDiscordStatus(data);
+    } catch (e) {
+      setDiscordStatus({ status: "exception", message: e.message });
+    } finally {
+      setDiscordSending(false);
+    }
   };
 
   return (
@@ -551,39 +566,49 @@ function SettingsPanel({ onClose }) {
           </div>
         </div>
 
-        {/* Notification Channels */}
+        {/* Discord webhook */}
         <div style={{ marginBottom: 28 }}>
           <div style={{ fontSize: 12, fontFamily: "var(--mono)", color: "var(--muted)", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 12 }}>
-            Alert Channels
+            Discord Alerts
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {[
-              { key: "email", label: "Email Alerts", emoji: "📧", desc: "Digest every 30 min or instant for error fares" },
-              { key: "push", label: "Push Notifications", emoji: "🔔", desc: "Instant via mobile app" },
-              { key: "telegram", label: "Telegram Bot", emoji: "💬", desc: "Instant messages to your Telegram" },
-              { key: "sms", label: "SMS (Error Fares Only)", emoji: "📱", desc: "Text alerts for confirmed error fares" },
-            ].map(ch => (
-              <div key={ch.key} onClick={() => setNotifications(prev => ({ ...prev, [ch.key]: !prev[ch.key] }))} style={{
-                display: "flex", alignItems: "center", gap: 14, padding: "12px 16px",
-                borderRadius: 10, border: `1px solid ${notifications[ch.key] ? "var(--accent)" : "var(--border)"}`,
-                background: notifications[ch.key] ? "var(--accent)08" : "var(--bg)",
-                cursor: "pointer", transition: "all 0.15s"
-              }}>
-                <span style={{ fontSize: 22 }}>{ch.emoji}</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", fontFamily: "var(--body)" }}>{ch.label}</div>
-                  <div style={{ fontSize: 11, color: "var(--muted)", fontFamily: "var(--mono)" }}>{ch.desc}</div>
-                </div>
-                <div style={{
-                  width: 40, height: 22, borderRadius: 11, padding: 2,
-                  background: notifications[ch.key] ? "var(--accent)" : "var(--border)",
-                  transition: "all 0.2s", display: "flex", alignItems: "center",
-                  justifyContent: notifications[ch.key] ? "flex-end" : "flex-start"
-                }}>
-                  <div style={{ width: 18, height: 18, borderRadius: "50%", background: "white", transition: "all 0.2s" }} />
+          <div style={{
+            padding: "14px 16px", borderRadius: 10, border: "1px solid var(--border)",
+            background: "var(--bg)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+              <span style={{ fontSize: 22 }}>💬</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Webhook delivery</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", fontFamily: "var(--mono)" }}>
+                  Set <code>DISCORD_WEBHOOK_URL</code> in .env, then restart the API
                 </div>
               </div>
-            ))}
+            </div>
+            <button
+              onClick={testDiscord}
+              disabled={discordSending}
+              style={{
+                width: "100%", padding: "10px 16px", borderRadius: 8,
+                border: "1px solid var(--accent)", background: "transparent",
+                color: "var(--accent)", fontSize: 13, fontWeight: 700,
+                fontFamily: "var(--display)", cursor: discordSending ? "default" : "pointer",
+                opacity: discordSending ? 0.5 : 1,
+              }}
+            >
+              {discordSending ? "Sending…" : "Send test message"}
+            </button>
+            {discordStatus && (
+              <div style={{
+                marginTop: 10, padding: "10px 12px", borderRadius: 8, fontSize: 12,
+                fontFamily: "var(--mono)",
+                color: discordStatus.status === "sent" ? "#80e0a0" : "#ff9090",
+                background: discordStatus.status === "sent" ? "#0f2a1a" : "#2a1a1a",
+                border: `1px solid ${discordStatus.status === "sent" ? "#1f5a33" : "#5a2a2a"}`,
+              }}>
+                {discordStatus.status === "sent" ? "✓ " : "✕ "}
+                {discordStatus.message}
+              </div>
+            )}
           </div>
         </div>
 
