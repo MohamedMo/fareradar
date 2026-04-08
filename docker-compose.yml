@@ -1,0 +1,33 @@
+# FareRadar — Deployment Guide
+# ═══════════════════════════════════════════════════════════
+
+# ── docker-compose.yml ────────────────────────────────────
+# Save this as docker-compose.yml in your project root
+
+version: "3.9"
+
+services:
+  scanner:
+    build: .
+    container_name: fareradar-scanner
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    command: python fare_radar.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/app/data/fareradar.db').execute('SELECT 1')"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+
+  # Optional: web dashboard (serve the React app)
+  dashboard:
+    image: nginx:alpine
+    container_name: fareradar-dashboard
+    ports:
+      - "8080:80"
+    volumes:
+      - ./dashboard/build:/usr/share/nginx/html:ro
+    depends_on:
+      - scanner

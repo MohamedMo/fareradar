@@ -1,0 +1,29 @@
+# env
+.env
+*.env
+
+# database
+*.db
+*.db-journal
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# logs
+*.log
+scan.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# node (dashboard)
+node_modules/
+dashboard/build/
