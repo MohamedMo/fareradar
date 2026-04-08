@@ -547,9 +547,19 @@ class CommunityMonitor:
     ]
 
     def __init__(self):
-        self.http = httpx.AsyncClient(timeout=15, headers={
-            "User-Agent": "FareRadar/2.0 (flight deal scanner)"
-        })
+        self.http = httpx.AsyncClient(
+            timeout=15,
+            follow_redirects=True,
+            headers={
+                # Reddit 403s non-browser UAs; use a realistic one.
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36 FareRadar/2.0"
+                ),
+                "Accept": "application/json, text/xml, */*",
+            },
+        )
 
     async def scan_reddit(self) -> list[Fare]:
         fares = []

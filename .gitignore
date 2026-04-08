@@ -1,29 +1,15 @@
-# env
-.env
-*.env
+# Python
+.venv/
+__pycache__/
+*.pyc
 
-# database
+# Node
+dashboard/node_modules/
+dashboard/dist/
+
+# Local DB
 *.db
 *.db-journal
 
-# python
-__pycache__/
-*.pyc
-.venv/
-venv/
-
-# logs
-*.log
-scan.log
-
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-
-# node (dashboard)
-node_modules/
-dashboard/build/
+# Env
+.env

@@ -547,14 +547,55 @@ function SettingsPanel({ onClose }) {
 
 // ── Main App ────────────────────────────────────────────────
 
+// ── Enrich an API deal with dashboard-side destination metadata ──
+const UNKNOWN_DEST = { city: "Unknown", code: "???", country: "", region: "Other", flag: "🌍" };
+
+function enrichDeal(apiDeal) {
+  const dest =
+    DESTINATIONS.find(d => d.code === apiDeal.destinationCode) ||
+    { ...UNKNOWN_DEST, code: apiDeal.destinationCode || "???", city: apiDeal.destName || "Unknown" };
+
+  const mins = apiDeal.minutesAgo ?? 0;
+  const expiresIn =
+    apiDeal.type === "error_fare"
+      ? `~${1 + Math.floor(Math.random() * 4)}h`
+      : `~${4 + Math.floor(Math.random() * 20)}h`;
+
+  return {
+    id: apiDeal.id,
+    destination: dest,
+    origin: apiDeal.origin || "LHR",
+    airline: apiDeal.airline,
+    type: apiDeal.type,
+    price: apiDeal.price,
+    normalPrice: apiDeal.normalPrice,
+    savings: apiDeal.savings,
+    foundAt: new Date(apiDeal.sentAt),
+    minutesAgo: mins,
+    travelDates: apiDeal.departureDate
+      ? new Date(apiDeal.departureDate).toLocaleDateString("en-GB", { month: "short", year: "numeric" })
+      : "Flexible",
+    returnTrip: true,
+    cabinClass: apiDeal.cabinClass || "Economy",
+    historicalPrices: [], // lazily loaded when a deal is selected
+    confidence: apiDeal.confidence,
+    expiresIn,
+    stops: 0,
+  };
+}
+
 export default function FareRadar() {
-  const [deals, setDeals] = useState(() => generateDeals());
-  const [stats, setStats] = useState(() => generateScanStats());
+  const [deals, setDeals] = useState([]);
+  const [stats, setStats] = useState({
+    routesMonitored: 0, faresScanned: 0, dealsFound: 0,
+    errorFares: 0, avgSavings: 0, lastScan: "—", scanRate: 0,
+  });
   const [selectedDeal, setSelectedDeal] = useState(null);
   const [filter, setFilter] = useState("all");
   const [region, setRegion] = useState("All");
   const [showSettings, setShowSettings] = useState(false);
   const [view, setView] = useState("feed"); // feed | detail (mobile)
+  const [apiError, setApiError] = useState(null);
 
   const filteredDeals = deals.filter(d => {
     if (filter !== "all" && d.type !== filter) return false;
@@ -562,21 +603,46 @@ export default function FareRadar() {
     return true;
   });
 
-  const selectDeal = (deal) => {
+  const selectDeal = async (deal) => {
     setSelectedDeal(deal);
     setView("detail");
+    // Lazy-load the price history for this route from the real API.
+    if (deal.origin && deal.destination.code && deal.historicalPrices.length === 0) {
+      try {
+        const r = await fetch(`/api/history?origin=${deal.origin}&destination=${deal.destination.code}`);
+        if (r.ok) {
+          const data = await r.json();
+          if (data.points?.length) {
+            setSelectedDeal({ ...deal, historicalPrices: data.points });
+          }
+        }
+      } catch (e) { /* keep empty chart */ }
+    }
   };
 
-  // Simulate new deals
+  // Fetch real deals + stats, poll every 10s.
   useEffect(() => {
-    const interval = setInterval(() => {
-      setStats(prev => ({
-        ...prev,
-        faresScanned: prev.faresScanned + Math.floor(Math.random() * 50000),
-        lastScan: `${Math.floor(Math.random() * 30)}s ago`,
-      }));
-    }, 5000);
-    return () => clearInterval(interval);
+    let cancelled = false;
+    async function load() {
+      try {
+        const [dealsRes, statsRes] = await Promise.all([
+          fetch("/api/deals"),
+          fetch("/api/stats"),
+        ]);
+        if (!dealsRes.ok || !statsRes.ok) throw new Error(`HTTP ${dealsRes.status}/${statsRes.status}`);
+        const dealsData = await dealsRes.json();
+        const statsData = await statsRes.json();
+        if (cancelled) return;
+        setDeals(dealsData.deals.map(enrichDeal));
+        setStats(statsData);
+        setApiError(null);
+      } catch (e) {
+        if (!cancelled) setApiError(e.message || "API unreachable");
+      }
+    }
+    load();
+    const interval = setInterval(load, 10000);
+    return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
   return (
@@ -652,14 +718,29 @@ export default function FareRadar() {
         </div>
       </header>
 
+      {apiError && (
+        <div style={{
+          padding: "10px 24px", background: "#3a1a1a", borderBottom: "1px solid #5a2a2a",
+          color: "#ff9090", fontFamily: "var(--mono)", fontSize: 12,
+        }}>
+          ⚠ API unreachable ({apiError}) — start it with: <code style={{color:"#fff"}}>uvicorn src.api:app --port 8000</code>
+        </div>
+      )}
+
       {/* Stats Row */}
       <div style={{ padding: "20px 24px 0" }}>
         <ScannerVisualization stats={stats} />
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
-          <StatCard label="Routes Monitored" value={`${(stats.routesMonitored / 1000000).toFixed(1)}M`} sub="across 340+ airlines" />
+          <StatCard
+            label="Routes Monitored"
+            value={stats.routesMonitored >= 1000
+              ? `${(stats.routesMonitored / 1000).toFixed(1)}K`
+              : stats.routesMonitored.toLocaleString()}
+            sub={`${stats.faresScanned.toLocaleString()} fares in DB`}
+          />
           <StatCard label="Deals Found Today" value={stats.dealsFound} sub={`${stats.errorFares} error fares`} accent />
           <StatCard label="Avg Savings" value={`${stats.avgSavings}%`} sub="below market rate" />
-          <StatCard label="Scan Rate" value={`${stats.scanRate.toLocaleString()}/s`} sub="fares per second" />
+          <StatCard label="Last Scan" value={stats.lastScan} sub="from scanner" />
         </div>
       </div>
 
