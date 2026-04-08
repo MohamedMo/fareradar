@@ -533,13 +533,23 @@ class CommunityMonitor:
     Zero API cost.
     """
 
+    # Reddit's .json endpoint is aggressively Cloudflare-blocked for
+    # unauthenticated traffic. The .rss endpoint is more permissive but
+    # still rate-limits — we keep it but don't depend on it.
     REDDIT_SUBS = [
-        "https://www.reddit.com/r/TravelDeals/new.json?limit=20",
-        "https://www.reddit.com/r/flights/new.json?limit=10",
+        "https://www.reddit.com/r/TravelDeals/.rss",
+        "https://www.reddit.com/r/flights/.rss",
     ]
 
+    # Flight-deal blogs with open RSS feeds. SecretFlying dropped their
+    # feed in early 2026 — replaced with working alternatives.
     RSS_FEEDS = [
-        "https://www.secretflying.com/feed/",
+        "https://www.theflightdeal.com/feed/",
+        "https://thriftytraveler.com/feed/",
+        "https://viewfromthewing.com/feed/",
+        "https://www.dansdeals.com/feed/",
+        "https://thepointsguy.com/feed/",
+        "https://www.holidaypirates.com/feed",
     ]
 
     PRICE_PATTERN = re.compile(
@@ -572,24 +582,34 @@ class CommunityMonitor:
         )
 
     async def scan_reddit(self) -> list[Fare]:
+        if not HAS_FEED:
+            return []
+
         fares = []
+        blocked = 0
         for url in self.REDDIT_SUBS:
             try:
                 r = await self.http.get(url)
+                if r.status_code == 403 or r.status_code == 429:
+                    blocked += 1
+                    continue
                 if r.status_code != 200:
                     continue
-                for post in r.json().get("data", {}).get("children", []):
+                feed = feedparser.parse(r.text)
+                for entry in feed.entries[:25]:
                     fare = self._parse_post(
-                        post["data"].get("title", ""),
-                        post["data"].get("selftext", ""),
-                        post["data"].get("url", ""),
+                        entry.get("title", ""),
+                        entry.get("summary", ""),
+                        entry.get("link", url),
                     )
                     if fare:
                         fares.append(fare)
             except Exception as e:
                 log.debug("Reddit scan error: %s", e)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
+        if blocked:
+            log.info("👥 Reddit: %d feeds rate-limited (will retry next scan)", blocked)
         if fares:
             log.info("👥 Reddit: found %d potential deals", len(fares))
         return fares

@@ -34,24 +34,72 @@ Phase 4:  Alert dispatch ────────→ Telegram (auto-send or huma
 
 ## Quick start
 
+### With the dashboard (recommended)
+
 ```bash
-# Clone
-git clone https://github.com/YOUR_USERNAME/fareradar.git
+git clone https://github.com/MohamedMo/fareradar.git
 cd fareradar
 
-# Install
-pip install -r requirements.txt
-
-# Configure
-cp .env.example .env
-# Edit .env with your API keys (all free — see below)
-
-# Run single scan
-python src/scanner.py --once
-
-# Run continuously (every 20 min)
-python src/scanner.py
+make setup       # creates .venv, installs Python deps, runs npm install
+make seed        # populates the DB with realistic demo data
+make dev         # starts API + dashboard in the background
 ```
+
+Open **http://localhost:5173**. You'll see 12 seeded deals with 30-day
+price histories, deep-links to Google Flights and Skyscanner, and an
+approve/reject review queue that writes to the SQLite DB.
+
+To run real scans against the seeded DB:
+
+```bash
+cp .env.example .env
+# Edit .env with your Amadeus + SerpAPI keys (both free — see below)
+make scanner     # one-shot scan; the dashboard polls every 10s
+```
+
+`make stop` kills the background API + dashboard processes.
+`make test` runs a smoke test that exercises every endpoint.
+
+### Scanner only (headless)
+
+```bash
+make setup
+cp .env.example .env    # fill in keys
+.venv/bin/python src/scanner.py          # run loop (every 20 min)
+.venv/bin/python src/scanner.py --once   # single pass
+```
+
+### Full stack in Docker
+
+```bash
+cp .env.example .env    # fill in keys
+docker compose up -d --build
+```
+
+- Dashboard → http://localhost:8080 (nginx → api service)
+- API → http://localhost:8000
+
+## Architecture
+
+```
+┌─────────────┐    ┌────────────┐    ┌──────────────┐
+│  scanner.py │───▶│ SQLite DB  │◀───│   api.py     │
+│  (20-min    │    │ prices /   │    │  (FastAPI)   │
+│   loop)     │    │ alerts /   │    │              │
+└─────────────┘    │ scan_runs  │    └──────┬───────┘
+                   └────────────┘           │
+                                            ▼
+                                    ┌──────────────┐
+                                    │  React SPA   │
+                                    │  (Vite)      │
+                                    └──────────────┘
+```
+
+- `src/scanner.py` — the scan loop (4 phases, see diagram above)
+- `src/api.py` — FastAPI backend exposing `/api/deals`, `/api/stats`,
+  `/api/history`, `/api/health`, and POST `/api/deals/:id/{approve,reject}`
+- `src/seed_demo.py` — idempotent demo-data seeder
+- `dashboard/` — React + Vite SPA that polls the API every 10s
 
 ## Free API keys
 
@@ -70,16 +118,23 @@ Total setup time: ~15 minutes.
 ```
 fareradar/
 ├── src/
-│   ├── scanner.py          # v2 — robust, seasonality-aware (recommended)
-│   ├── scanner_lite.py     # Lightweight version with simpler 4-phase pipeline
-│   └── scanner_full.py     # Extended version with Kiwi integration
-├── dashboard/
-│   └── App.jsx             # React dashboard UI (demo with simulated data)
+│   ├── scanner.py          # Scan loop — 4 phases, writes to SQLite
+│   ├── scanner_lite.py     # Alternate: simpler 4-phase pipeline
+│   ├── scanner_full.py     # Alternate: extended Kiwi integration
+│   ├── api.py              # FastAPI backend for the dashboard
+│   └── seed_demo.py        # Demo-data seeder (idempotent)
+├── dashboard/              # React + Vite SPA
+│   ├── App.jsx             #   main component, fetches /api/*
+│   ├── main.jsx
+│   ├── index.html
+│   ├── vite.config.js      #   proxies /api → localhost:8000
+│   ├── Dockerfile          #   multi-stage build → nginx
+│   └── nginx.conf          #   production /api proxy → api service
 ├── .env.example            # Configuration template
 ├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
-├── setup.sh                # Auto-installer
+├── Dockerfile              # Single image for scanner + api
+├── docker-compose.yml      # Full stack: scanner + api + dashboard
+├── Makefile                # make setup / seed / dev / test / docker-up
 └── README.md
 ```
 
@@ -135,8 +190,8 @@ docker compose up -d
 ## Known limitations
 
 - **No email delivery** — Telegram only. Adding email (via Resend/SendGrid) is the main gap for subscriber-facing use.
-- **Dashboard is disconnected** — The React UI shows simulated data. Connecting it requires a FastAPI backend serving `/api/deals` etc.
-- **Telegram review callbacks aren't handled** — The inline keyboard buttons appear but pressing them doesn't trigger server-side logic yet. Needs a webhook handler.
+- **Telegram review callbacks aren't handled** — approve/reject from the dashboard is fully wired, but the equivalent Telegram inline-keyboard webhook still isn't.
+- **Community phase route parsing is weak** — RSS posts use city names ("Miami – Denver"), and the current regex only matches IATA codes. Fares get captured but routed as `???→???` and filtered by anomaly detection. A city → IATA lookup would close this.
 - **No LCC-specific coverage** — Ryanair, EasyJet etc. aren't well represented in Amadeus. Kiwi covers them but its free tier is unreliable.
 - **Single-currency** — Assumes GBP. Multi-currency support needs conversion logic.
 

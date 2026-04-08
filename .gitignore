@@ -13,3 +13,7 @@ dashboard/dist/
 
 # Env
 .env
+
+# Runtime logs / Docker volume
+logs/
+data/

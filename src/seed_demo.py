@@ -48,6 +48,11 @@ async def seed():
         await db.execute("DELETE FROM prices WHERE source LIKE 'demo%'")
         await db.execute("DELETE FROM alerts WHERE fare_hash LIKE 'demo-%'")
         await db.execute("DELETE FROM scan_runs")
+        # Reset autoincrement counters so seeded rows get predictable IDs
+        # (1..N). Makes tests and demos reproducible.
+        await db.execute(
+            "DELETE FROM sqlite_sequence WHERE name IN ('alerts','prices','scan_runs')"
+        )
         await db.commit()
 
         now = datetime.utcnow()
