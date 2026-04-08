@@ -47,6 +47,7 @@ async def seed():
         # Wipe previous demo rows — identifiable by the "demo" source/component tag.
         await db.execute("DELETE FROM prices WHERE source LIKE 'demo%'")
         await db.execute("DELETE FROM alerts WHERE fare_hash LIKE 'demo-%'")
+        await db.execute("DELETE FROM scan_runs")
         await db.commit()
 
         now = datetime.utcnow()
@@ -102,6 +103,16 @@ async def seed():
                (fare_hash, route, price, deal_type, savings_pct, confidence, approved, sent_at)
                VALUES (?,?,?,?,?,?,?,?)""",
             alert_rows,
+        )
+
+        # 3. Fake a recent scan_run so the dashboard shows a sensible scan rate.
+        finished = now - timedelta(seconds=42)
+        started = finished - timedelta(seconds=18)
+        await db.execute(
+            """INSERT INTO scan_runs
+               (started_at, finished_at, duration_s, fares_scanned, anomalies, verified)
+               VALUES (?,?,?,?,?,?)""",
+            (started.isoformat(), finished.isoformat(), 18.0, len(price_rows), len(alert_rows), 8),
         )
 
         await db.commit()

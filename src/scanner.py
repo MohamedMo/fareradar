@@ -223,6 +223,16 @@ class DB:
                     check_time TEXT DEFAULT (datetime('now')),
                     component TEXT, status TEXT, detail TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS scan_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT NOT NULL,
+                    duration_s REAL NOT NULL,
+                    fares_scanned INTEGER NOT NULL,
+                    anomalies INTEGER NOT NULL,
+                    verified INTEGER NOT NULL DEFAULT 0
+                );
             """)
             await db.commit()
 
@@ -861,6 +871,7 @@ class FareRadar:
 
     async def scan(self) -> list[Deal]:
         await self.db.init()
+        scan_started = datetime.utcnow()
         all_deals = []
         all_fares = []
 
@@ -948,6 +959,24 @@ class FareRadar:
 
         await self.db.log_health("scanner", "ok",
             f"fares={len(all_fares)} anomalies={len(anomalies)}")
+
+        # Record this scan run for dashboard scan-rate calculation.
+        scan_finished = datetime.utcnow()
+        duration_s = max(0.001, (scan_finished - scan_started).total_seconds())
+        async with aiosqlite.connect(C.DB) as dbconn:
+            await dbconn.execute(
+                "INSERT INTO scan_runs (started_at, finished_at, duration_s, "
+                "fares_scanned, anomalies, verified) VALUES (?,?,?,?,?,?)",
+                (
+                    scan_started.isoformat(),
+                    scan_finished.isoformat(),
+                    duration_s,
+                    len(all_fares),
+                    len(anomalies),
+                    sum(1 for d in anomalies if d.fare.verified),
+                ),
+            )
+            await dbconn.commit()
 
         return all_deals
 

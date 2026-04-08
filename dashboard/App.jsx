@@ -193,7 +193,7 @@ function DealCard({ deal, isSelected, onClick }) {
   );
 }
 
-function DealDetail({ deal }) {
+function DealDetail({ deal, onReview }) {
   if (!deal) return (
     <div style={{
       display: "flex", alignItems: "center", justifyContent: "center", height: "100%",
@@ -305,29 +305,83 @@ function DealDetail({ deal }) {
         </div>
       </div>
 
+      {/* Review status banner */}
+      {deal.approved === 1 && (
+        <div style={{
+          padding: "10px 14px", borderRadius: 10, background: "#0f2a1a",
+          border: "1px solid #1f5a33", color: "#80e0a0", fontFamily: "var(--mono)",
+          fontSize: 12, marginBottom: 12
+        }}>
+          ✓ APPROVED — visible to subscribers
+        </div>
+      )}
+      {deal.approved === 0 && (
+        <div style={{
+          padding: "10px 14px", borderRadius: 10, background: "#2a1a1a",
+          border: "1px solid #5a2a2a", color: "#ff9090", fontFamily: "var(--mono)",
+          fontSize: 12, marginBottom: 12
+        }}>
+          ✕ REJECTED
+        </div>
+      )}
+
       {/* Action Buttons */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <button style={{
-          flex: 1, padding: "14px 20px", borderRadius: 10, border: "none",
-          background: "var(--accent)", color: "white", fontSize: 14, fontWeight: 700,
-          fontFamily: "var(--display)", cursor: "pointer", letterSpacing: 0.3,
-          minWidth: 160
-        }}>
+        <a
+          href={deal.googleFlightsUrl || "#"}
+          target="_blank" rel="noreferrer"
+          style={{
+            flex: 1, padding: "14px 20px", borderRadius: 10, border: "none",
+            background: "var(--accent)", color: "white", fontSize: 14, fontWeight: 700,
+            fontFamily: "var(--display)", cursor: "pointer", letterSpacing: 0.3,
+            minWidth: 160, textAlign: "center", textDecoration: "none",
+            opacity: deal.googleFlightsUrl ? 1 : 0.4,
+            pointerEvents: deal.googleFlightsUrl ? "auto" : "none",
+          }}
+        >
           Book via Google Flights ↗
-        </button>
-        <button style={{
-          flex: 1, padding: "14px 20px", borderRadius: 10, border: "1px solid var(--border)",
-          background: "var(--card)", color: "var(--text)", fontSize: 14, fontWeight: 600,
-          fontFamily: "var(--display)", cursor: "pointer", minWidth: 140
-        }}>
+        </a>
+        <a
+          href={deal.skyscannerUrl || "#"}
+          target="_blank" rel="noreferrer"
+          style={{
+            flex: 1, padding: "14px 20px", borderRadius: 10, border: "1px solid var(--border)",
+            background: "var(--card)", color: "var(--text)", fontSize: 14, fontWeight: 600,
+            fontFamily: "var(--display)", cursor: "pointer", minWidth: 140,
+            textAlign: "center", textDecoration: "none",
+            opacity: deal.skyscannerUrl ? 1 : 0.4,
+            pointerEvents: deal.skyscannerUrl ? "auto" : "none",
+          }}
+        >
           Check on Skyscanner ↗
+        </a>
+      </div>
+
+      {/* Review queue controls */}
+      <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+        <button
+          onClick={() => onReview?.(deal, "approve")}
+          disabled={deal.approved === 1}
+          style={{
+            flex: 1, padding: "12px 18px", borderRadius: 10,
+            border: "1px solid #1f5a33", background: deal.approved === 1 ? "#1f5a33" : "#0f2a1a",
+            color: "#80e0a0", fontSize: 13, fontWeight: 700, fontFamily: "var(--display)",
+            cursor: deal.approved === 1 ? "default" : "pointer",
+          }}
+        >
+          {deal.approved === 1 ? "✓ Approved" : "Approve ✓"}
         </button>
-        <button style={{
-          padding: "14px 20px", borderRadius: 10, border: "1px solid var(--border)",
-          background: "var(--card)", color: "var(--text)", fontSize: 14, fontWeight: 600,
-          fontFamily: "var(--display)", cursor: "pointer"
-        }}>
-          Set Alert 🔔
+        <button
+          onClick={() => onReview?.(deal, "reject")}
+          disabled={deal.approved === 0}
+          style={{
+            flex: 1, padding: "12px 18px", borderRadius: 10,
+            border: "1px solid #5a2a2a", background: deal.approved === 0 ? "#5a2a2a" : "#2a1a1a",
+            color: "#ff9090", fontSize: 13, fontWeight: 700, fontFamily: "var(--display)",
+            cursor: deal.approved === 0 ? "default" : "pointer",
+          }}
+        >
+          {deal.approved === 0 ? "✕ Rejected" : "Reject ✕"}
         </button>
       </div>
     </div>
@@ -562,7 +616,7 @@ function enrichDeal(apiDeal) {
       : `~${4 + Math.floor(Math.random() * 20)}h`;
 
   return {
-    id: apiDeal.id,
+    id: apiDeal.id,                       // numeric DB id, used by approve/reject endpoints
     destination: dest,
     origin: apiDeal.origin || "LHR",
     airline: apiDeal.airline,
@@ -581,6 +635,9 @@ function enrichDeal(apiDeal) {
     confidence: apiDeal.confidence,
     expiresIn,
     stops: 0,
+    approved: apiDeal.approved,
+    googleFlightsUrl: apiDeal.googleFlightsUrl,
+    skyscannerUrl: apiDeal.skyscannerUrl,
   };
 }
 
@@ -602,6 +659,19 @@ export default function FareRadar() {
     if (region !== "All" && d.destination.region !== region) return false;
     return true;
   });
+
+  const reviewDeal = async (deal, action) => {
+    const newApproved = action === "approve" ? 1 : 0;
+    try {
+      const r = await fetch(`/api/deals/${deal.id}/${action}`, { method: "POST" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      // Optimistic local update — no need to wait for the next poll.
+      setDeals(ds => ds.map(d => d.id === deal.id ? { ...d, approved: newApproved } : d));
+      setSelectedDeal(d => d && d.id === deal.id ? { ...d, approved: newApproved } : d);
+    } catch (e) {
+      setApiError(`Review failed: ${e.message}`);
+    }
+  };
 
   const selectDeal = async (deal) => {
     setSelectedDeal(deal);
@@ -775,7 +845,7 @@ export default function FareRadar() {
             background: "var(--card)", borderRadius: 16, border: "1px solid var(--border)",
             minHeight: 400, maxHeight: "calc(100vh - 100px)", overflowY: "auto",
           }}>
-            <DealDetail deal={selectedDeal} />
+            <DealDetail deal={selectedDeal} onReview={reviewDeal} />
           </div>
         </div>
       </div>

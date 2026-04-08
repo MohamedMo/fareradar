@@ -23,6 +23,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from urllib.parse import quote_plus
 
 DB_PATH = os.getenv("DB_PATH", "fareradar_v2.db")
 
@@ -32,9 +33,31 @@ app = FastAPI(title="FareRadar API", version="0.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+def _booking_urls(origin: str | None, destination: str | None, departure_date: str | None) -> dict:
+    """Build deep-links to Google Flights and Skyscanner for a given route."""
+    if not origin or not destination:
+        return {"googleFlights": None, "skyscanner": None}
+    depart = departure_date or ""
+    # Google Flights: uses a search string in the URL.
+    q = f"Flights from {origin} to {destination}"
+    if depart:
+        q += f" on {depart}"
+    gf = f"https://www.google.com/travel/flights?q={quote_plus(q)}"
+    # Skyscanner: YYMMDD in the path; omit date if we don't have one.
+    if depart:
+        try:
+            d = datetime.fromisoformat(depart).strftime("%y%m%d")
+            sk = f"https://www.skyscanner.net/transport/flights/{origin.lower()}/{destination.lower()}/{d}/"
+        except ValueError:
+            sk = f"https://www.skyscanner.net/transport/flights/{origin.lower()}/{destination.lower()}/"
+    else:
+        sk = f"https://www.skyscanner.net/transport/flights/{origin.lower()}/{destination.lower()}/"
+    return {"googleFlights": gf, "skyscanner": sk}
 
 
 def _conn() -> sqlite3.Connection:
@@ -123,8 +146,9 @@ def list_deals(limit: int = 50):
                 else:
                     normal_price = round(r["price"] * 1.5)
 
+            links = _booking_urls(origin, destination, departure_date)
             out.append({
-                "id": f"alert-{r['id']}",
+                "id": r["id"],
                 "origin": origin,
                 "destinationCode": destination,
                 "destName": dest_name,
@@ -139,8 +163,29 @@ def list_deals(limit: int = 50):
                 "sentAt": r["sent_at"],
                 "minutesAgo": minutes_ago,
                 "approved": r["approved"],
+                "googleFlightsUrl": links["googleFlights"],
+                "skyscannerUrl": links["skyscanner"],
             })
         return {"deals": out, "count": len(out)}
+
+
+@app.post("/api/deals/{deal_id}/approve")
+def approve_deal(deal_id: int):
+    return _set_approval(deal_id, 1)
+
+
+@app.post("/api/deals/{deal_id}/reject")
+def reject_deal(deal_id: int):
+    return _set_approval(deal_id, 0)
+
+
+def _set_approval(deal_id: int, value: int):
+    with _conn() as db:
+        cur = db.execute("UPDATE alerts SET approved=? WHERE id=?", (value, deal_id))
+        db.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Alert {deal_id} not found")
+    return {"id": deal_id, "approved": value}
 
 
 @app.get("/api/stats")
@@ -166,14 +211,16 @@ def stats():
             "SELECT AVG(savings_pct) FROM alerts WHERE date(sent_at)=?", (today,)
         ).fetchone()[0] or 0
 
-        last_scan_row = db.execute(
-            "SELECT MAX(scanned_at) FROM prices"
-        ).fetchone()[0]
+        last_run = db.execute(
+            "SELECT finished_at, duration_s, fares_scanned "
+            "FROM scan_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
 
     last_scan = "never"
-    if last_scan_row:
+    scan_rate = 0
+    if last_run:
         try:
-            delta = datetime.utcnow() - datetime.fromisoformat(last_scan_row)
+            delta = datetime.utcnow() - datetime.fromisoformat(last_run["finished_at"])
             secs = int(delta.total_seconds())
             if secs < 60:
                 last_scan = f"{secs}s ago"
@@ -183,6 +230,8 @@ def stats():
                 last_scan = f"{secs // 3600}h ago"
         except ValueError:
             pass
+        if last_run["duration_s"] and last_run["duration_s"] > 0:
+            scan_rate = round(last_run["fares_scanned"] / last_run["duration_s"])
 
     return {
         "routesMonitored": int(route_count),
@@ -191,8 +240,7 @@ def stats():
         "errorFares": int(error_fares_today),
         "avgSavings": round(avg_savings),
         "lastScan": last_scan,
-        # Not tracked in the DB yet — keep the shape the UI expects.
-        "scanRate": 0,
+        "scanRate": int(scan_rate),
     }
 
 
