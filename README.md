@@ -107,9 +107,10 @@ docker compose up -d --build
 |---------|-----------|---------|-------------------|
 | **Amadeus** | 2,000 calls/month | [developers.amadeus.com](https://developers.amadeus.com) | Flight Inspiration, Price Analysis, Cheapest Dates |
 | **SerpAPI** | 250 queries/month | [serpapi.com](https://serpapi.com) | Google Travel Explore (everywhere search) |
-| **Telegram** | Unlimited | Message [@BotFather](https://t.me/BotFather) | Instant push alerts |
-| Reddit | No auth needed | — | Community deal monitoring |
-| RSS | No auth needed | — | SecretFlying feed |
+| **Telegram** | Unlimited | Message [@BotFather](https://t.me/BotFather) | Instant push alerts with approve/reject inline buttons |
+| **Discord** | Unlimited | Server Settings → Integrations → Webhooks → New Webhook | Rich embeds; approvals in the dashboard auto-publish here |
+| RSS | No auth needed | — | TheFlightDeal, ThriftyTraveler, ViewFromTheWing, DansDeals, The Points Guy, HolidayPirates |
+| Reddit | No auth needed | — | r/TravelDeals and r/flights via `.rss` (best-effort, often rate-limited) |
 
 Total setup time: ~15 minutes.
 
@@ -189,8 +190,8 @@ docker compose up -d
 
 ## Known limitations
 
-- **No email delivery** — Telegram only. Adding email (via Resend/SendGrid) is the main gap for subscriber-facing use.
-- **Telegram review callbacks aren't handled** — approve/reject from the dashboard is fully wired, but the equivalent Telegram inline-keyboard webhook still isn't.
+- **No email delivery** — Telegram + Discord only. Adding email (via Resend/SendGrid) is the main gap for subscriber-facing use.
+- **Telegram review callbacks aren't handled** — approve/reject from the dashboard is fully wired (and publishes to Discord on approval), but the equivalent Telegram inline-keyboard webhook still isn't.
 - **Community phase route parsing is weak** — RSS posts use city names ("Miami – Denver"), and the current regex only matches IATA codes. Fares get captured but routed as `???→???` and filtered by anomaly detection. A city → IATA lookup would close this.
 - **No LCC-specific coverage** — Ryanair, EasyJet etc. aren't well represented in Amadeus. Kiwi covers them but its free tier is unreliable.
 - **Single-currency** — Assumes GBP. Multi-currency support needs conversion logic.

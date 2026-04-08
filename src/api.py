@@ -21,11 +21,20 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from urllib.parse import quote_plus
 
 DB_PATH = os.getenv("DB_PATH", "fareradar_v2.db")
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "")
+
+DEAL_COLORS = {
+    "error_fare":  0xFF3366,
+    "flash_sale":  0xFF9500,
+    "price_drop":  0x00CC88,
+    "hidden_fare": 0x7C5CFC,
+}
 
 app = FastAPI(title="FareRadar API", version="0.1")
 
@@ -171,7 +180,10 @@ def list_deals(limit: int = 50):
 
 @app.post("/api/deals/{deal_id}/approve")
 def approve_deal(deal_id: int):
-    return _set_approval(deal_id, 1)
+    result = _set_approval(deal_id, 1)
+    # On approval, publish the deal to Discord (if configured).
+    published = _publish_to_discord(deal_id)
+    return {**result, "discord": published}
 
 
 @app.post("/api/deals/{deal_id}/reject")
@@ -186,6 +198,69 @@ def _set_approval(deal_id: int, value: int):
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail=f"Alert {deal_id} not found")
     return {"id": deal_id, "approved": value}
+
+
+def _publish_to_discord(deal_id: int) -> str:
+    """POST an approved deal to the configured Discord webhook."""
+    if not DISCORD_WEBHOOK:
+        return "not_configured"
+
+    with _conn() as db:
+        row = db.execute(
+            """SELECT id, route, price, deal_type, savings_pct, confidence, sent_at
+               FROM alerts WHERE id=?""", (deal_id,),
+        ).fetchone()
+        if not row:
+            return "alert_not_found"
+
+        origin, destination = _split_route(row["route"])
+        airline = dest_name = departure_date = None
+        if origin and destination:
+            ctx = db.execute(
+                """SELECT airline, dest_name, departure_date FROM prices
+                   WHERE origin=? AND destination=? ORDER BY scanned_at DESC LIMIT 1""",
+                (origin, destination),
+            ).fetchone()
+            if ctx:
+                airline, dest_name, departure_date = (
+                    ctx["airline"], ctx["dest_name"], ctx["departure_date"],
+                )
+
+    dtype = (row["deal_type"] or "price_drop").lower()
+    color = DEAL_COLORS.get(dtype, 0x00CC88)
+    links = _booking_urls(origin, destination, departure_date)
+
+    fields = [
+        {"name": "Savings", "value": f"{row['savings_pct'] or 0:.0f}% off", "inline": True},
+        {"name": "Confidence", "value": f"{(row['confidence'] or 0) * 100:.0f}%", "inline": True},
+        {"name": "Type", "value": dtype.replace("_", " ").title(), "inline": True},
+    ]
+    if airline:
+        fields.append({"name": "Airline", "value": airline, "inline": True})
+    if departure_date:
+        fields.append({"name": "Departure", "value": departure_date, "inline": True})
+    if dest_name:
+        fields.append({"name": "Destination", "value": dest_name[:100], "inline": False})
+
+    payload = {
+        "username": "FareRadar",
+        "embeds": [{
+            "title": f"📡 {origin or '???'} → {destination or '???'} — £{row['price']:.0f}",
+            "url": links["googleFlights"],
+            "color": color,
+            "fields": fields,
+            "footer": {"text": "Approved via FareRadar dashboard"},
+        }],
+    }
+
+    try:
+        with httpx.Client(timeout=10) as client:
+            r = client.post(DISCORD_WEBHOOK, json=payload)
+        if r.status_code in (200, 204):
+            return "sent"
+        return f"error_{r.status_code}"
+    except Exception as e:
+        return f"exception_{type(e).__name__}"
 
 
 @app.get("/api/stats")

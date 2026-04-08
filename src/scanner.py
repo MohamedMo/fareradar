@@ -64,6 +64,13 @@ class C:
     TG_CHAT         = os.getenv("TELEGRAM_CHAT_ID", "")
     TG_REVIEW_CHAT  = os.getenv("TELEGRAM_REVIEW_CHAT", os.getenv("TELEGRAM_CHAT_ID", ""))
 
+    # Discord webhooks — one for public alerts, one for the review
+    # queue. If the review URL isn't set, reviews fall back to the
+    # public webhook. Both are optional; unset = disabled.
+    DISCORD_WEBHOOK        = os.getenv("DISCORD_WEBHOOK_URL", "")
+    DISCORD_REVIEW_WEBHOOK = os.getenv("DISCORD_REVIEW_WEBHOOK_URL",
+                                       os.getenv("DISCORD_WEBHOOK_URL", ""))
+
     ORIGINS = os.getenv("ORIGINS", "LHR,LGW,STN,MAN,EDI,BHX").split(",")
     DB      = os.getenv("DB_PATH", "fareradar_v2.db")
 
@@ -789,22 +796,28 @@ class Detector:
 
 
 # ══════════════════════════════════════════════════════════════
-# Telegram Alerts (with human review queue)
+# Alerts — Telegram and Discord fan-out (with human review queue)
 # ══════════════════════════════════════════════════════════════
+
+# Discord embed colors per deal type (decimal RGB).
+DISCORD_COLORS = {
+    "error_fare":  0xFF3366,   # hot pink
+    "flash_sale":  0xFF9500,   # orange
+    "price_drop":  0x00CC88,   # green
+    "hidden_fare": 0x7C5CFC,   # purple
+}
+
 
 class Alerts:
     def __init__(self, db: DB):
         self.db = db
         self.http = httpx.AsyncClient(timeout=15)
 
-    async def send_for_review(self, deal: Deal):
-        """Send deal to review chat with approve/reject buttons."""
-        if not C.TG_TOKEN or not C.TG_REVIEW_CHAT:
-            log.info("📋 REVIEW NEEDED: %s→%s £%.0f (%.0f%% off, %.0f%% confidence)",
-                     deal.fare.origin, deal.fare.destination,
-                     deal.fare.price, deal.savings_pct, deal.confidence)
-            return
+    # ─── Telegram ─────────────────────────────────────────────
 
+    async def _send_telegram_review(self, deal: Deal):
+        if not C.TG_TOKEN or not C.TG_REVIEW_CHAT:
+            return
         keyboard = {
             "inline_keyboard": [[
                 {"text": "✅ Approve & Send", "callback_data": f"approve:{deal.fare.hash}"},
@@ -813,7 +826,6 @@ class Alerts:
                 {"text": "🔍 Check Google Flights", "url": self._gf_url(deal.fare)},
             ]]
         }
-
         try:
             await self.http.post(
                 f"https://api.telegram.org/bot{C.TG_TOKEN}/sendMessage",
@@ -827,12 +839,9 @@ class Alerts:
         except Exception as e:
             log.error("Telegram review send failed: %s", e)
 
-    async def send_to_subscribers(self, deal: Deal):
-        """Send approved deal to subscriber channel."""
+    async def _send_telegram_public(self, deal: Deal):
         if not C.TG_TOKEN or not C.TG_CHAT:
-            log.info("✅ DEAL SENT: %s", deal.alert_text()[:100])
             return
-
         try:
             r = await self.http.post(
                 f"https://api.telegram.org/bot{C.TG_TOKEN}/sendMessage",
@@ -843,10 +852,83 @@ class Alerts:
                 },
             )
             if r.status_code == 200:
-                log.info("✅ Sent: %s→%s £%.0f", deal.fare.origin,
+                log.info("✅ Telegram sent: %s→%s £%.0f", deal.fare.origin,
                          deal.fare.destination, deal.fare.price)
         except Exception as e:
             log.error("Telegram send failed: %s", e)
+
+    # ─── Discord ──────────────────────────────────────────────
+
+    def _discord_embed(self, deal: Deal, *, review: bool) -> dict:
+        """Build a rich Discord embed for a deal."""
+        fare = deal.fare
+        dtype = (deal.deal_type.value if hasattr(deal.deal_type, "value") else str(deal.deal_type)).lower()
+        color = DISCORD_COLORS.get(dtype, 0x00CC88)
+
+        title_prefix = "📋 Review" if review else "📡 Deal"
+        title = f"{title_prefix}: {fare.origin} → {fare.destination} — £{fare.price:.0f}"
+
+        fields = [
+            {"name": "Savings", "value": f"{deal.savings_pct:.0f}% off", "inline": True},
+            {"name": "Confidence", "value": f"{deal.confidence:.0f}%", "inline": True},
+            {"name": "Type", "value": dtype.replace("_", " ").title(), "inline": True},
+        ]
+        if fare.airline:
+            fields.append({"name": "Airline", "value": fare.airline, "inline": True})
+        if fare.departure_date:
+            fields.append({"name": "Departure", "value": fare.departure_date, "inline": True})
+        if fare.dest_name:
+            fields.append({"name": "Destination", "value": fare.dest_name[:100], "inline": False})
+
+        return {
+            "username": "FareRadar",
+            "embeds": [{
+                "title": title,
+                "url": self._gf_url(fare),
+                "color": color,
+                "fields": fields,
+                "footer": {"text": f"Source: {fare.source or 'unknown'}"},
+            }],
+        }
+
+    async def _send_discord(self, webhook: str, payload: dict, label: str):
+        if not webhook:
+            return
+        try:
+            r = await self.http.post(webhook, json=payload)
+            if r.status_code in (200, 204):
+                log.info("✅ Discord %s sent", label)
+            else:
+                log.warning("Discord %s webhook returned %d: %s",
+                            label, r.status_code, r.text[:200])
+        except Exception as e:
+            log.error("Discord %s send failed: %s", label, e)
+
+    # ─── Unified entry points ────────────────────────────────
+
+    async def send_for_review(self, deal: Deal):
+        """Send a deal to the review queue via every configured channel."""
+        # Always log for headless / no-credentials runs.
+        log.info("📋 REVIEW NEEDED: %s→%s £%.0f (%.0f%% off, %.0f%% confidence)",
+                 deal.fare.origin, deal.fare.destination,
+                 deal.fare.price, deal.savings_pct, deal.confidence)
+        await self._send_telegram_review(deal)
+        await self._send_discord(
+            C.DISCORD_REVIEW_WEBHOOK,
+            self._discord_embed(deal, review=True),
+            "review",
+        )
+
+    async def send_to_subscribers(self, deal: Deal):
+        """Publish an approved deal via every configured channel."""
+        log.info("✅ DEAL SENT: %s→%s £%.0f",
+                 deal.fare.origin, deal.fare.destination, deal.fare.price)
+        await self._send_telegram_public(deal)
+        await self._send_discord(
+            C.DISCORD_WEBHOOK,
+            self._discord_embed(deal, review=False),
+            "public",
+        )
 
     async def auto_send(self, deal: Deal):
         """
